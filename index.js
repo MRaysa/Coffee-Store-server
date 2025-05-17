@@ -4,6 +4,14 @@ const cors = require("cors");
 require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 3000;
+const admin = require("firebase-admin");
+
+// Initialize Firebase Admin
+const serviceAccount = require("./coffee-store-app-a5228-firebase-adminsdk-fbsvc-20e5e6ccc6.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 // middleware
 app.use(cors());
@@ -45,7 +53,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // await client.connect();
 
     const coffeesCollection = client.db("coffeeDB").collection("coffees");
     const userCollection = client.db("coffeeDB").collection("users");
@@ -133,15 +141,74 @@ async function run() {
     });
 
     // Delete user from db
+    // app.delete("/users/:id", async (req, res) => {
+    //   const id = req.params.id;
+    //   const query = { _id: new ObjectId(id) };
+    //   const result = await userCollection.deleteOne(query);
+    //   res.send(result);
+    // });
+
+    // Delete user from MongoDB and Firebase
     app.delete("/users/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
-      const result = await userCollection.deleteOne(query);
-      res.send(result);
+
+      // First get the user to get the Firebase UID
+      const user = await userCollection.findOne(query);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      // Delete from MongoDB
+      const mongoResult = await userCollection.deleteOne(query);
+
+      if (mongoResult.deletedCount === 0) {
+        return res.status(404).json({ error: "User not found in MongoDB" });
+      }
+
+      // If user has a UID (Firebase ID), delete from Firebase
+      if (user.uid) {
+        try {
+          await admin.auth().deleteUser(user.uid);
+          return res.json({
+            message: "User deleted from both MongoDB and Firebase",
+            deletedCount: mongoResult.deletedCount,
+          });
+        } catch (firebaseError) {
+          console.error("Firebase deletion error:", firebaseError);
+          // Even if Firebase deletion fails, we consider it a partial success
+          return res.json({
+            message: "User deleted from MongoDB but Firebase deletion failed",
+            deletedCount: mongoResult.deletedCount,
+            firebaseError: firebaseError.message,
+          });
+        }
+      }
+
+      return res.json({
+        message: "User deleted from MongoDB (no Firebase UID found)",
+        deletedCount: mongoResult.deletedCount,
+      });
+    });
+
+    // Separate endpoint just for Firebase deletion (if needed)
+    app.delete("/delete-user/:uid", async (req, res) => {
+      const { uid } = req.params;
+      try {
+        await admin.auth().deleteUser(uid);
+        res
+          .status(200)
+          .json({ message: "User deleted successfully from Firebase" });
+      } catch (error) {
+        console.error("Error deleting user from Firebase:", error);
+        res.status(500).json({
+          error: "Failed to delete user from Firebase: " + error.message,
+        });
+      }
     });
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB..........!"
     );
@@ -150,4 +217,25 @@ async function run() {
     // await client.close();
   }
 }
+
+//  delete from firebase
+// app.delete("/delete-user/:uid", verifyAdmin, async (req, res) => {
+//   const { uid } = req.params;
+//   try {
+//     await admin.auth().deleteUser(uid);
+//     res.status(200).json({ message: "User deleted successfully" });
+//   } catch (error) {
+//     console.error("Error deleting user:", error);
+//     res.status(500).json({ error: "Failed to delete user: " + error.message });
+//   }
+// });
+
+// var admin = require("firebase-admin");
+
+// var serviceAccount = require("./coffee-store-app-a5228-firebase-adminsdk-fbsvc-20e5e6ccc6.json");
+
+// admin.initializeApp({
+//   credential: admin.credential.cert(serviceAccount),
+// });
+
 run().catch(console.dir);
